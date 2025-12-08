@@ -1,12 +1,12 @@
 // src/pages/AdminDashboard.jsx
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import toast from "react-hot-toast";
 
 import {
   API_URL,
   getToken,
-  fetchReservasAdmin, // helper admin
+  fetchReservasAdmin,
   fetchCabanas,
   createCabana,
   updateCabana,
@@ -14,26 +14,68 @@ import {
   fetchMe,
   logoutUser,
   validarPago,
+  fetchCabanaImagenes,
+  uploadCabanaImagen,
+  deleteCabanaImagen,
+  // Servicios
+  fetchServiciosAdmin,
+  createServicio,
+  updateServicio,
+  deleteServicio,
+  api // Importamos el helper api para las nuevas llamadas
 } from "../api";
 
-const emptyCabana = {
-  id: null,
-  nombre: "",
-  descripcion: "",
-  capacidad: "",
-  precio_noche: "",
-  estado: "disponible",
-  imagen_url: "",
+// --- COMPONENTE AUXILIAR: FOOTER ---
+const BusinessFooter = ({ reservas, servicios, cabanas }) => {
+    const totalVentas = reservas.reduce((sum, r) => sum + (Number(r.monto_total) || 0), 0);
+    const metaMensual = 5000000;
+    const porcentajeMeta = Math.min(100, Math.round((totalVentas / metaMensual) * 100));
+    const reservasConServicios = reservas.filter(r => (r.monto_servicios || 0) > 0).length;
+    const porcentajeUpselling = reservas.length > 0 ? Math.round((reservasConServicios / reservas.length) * 100) : 0;
+
+    return (
+        <footer className="mt-12 bg-slate-900 text-slate-300 py-12 px-6 rounded-t-3xl shadow-[0_-10px_40px_-15px_rgba(0,0,0,0.3)]">
+            <div className="max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-12">
+                <div>
+                    <h4 className="text-white font-bold text-lg mb-4 flex items-center gap-2">📊 Performance</h4>
+                    <div className="space-y-4">
+                        <div>
+                            <div className="flex justify-between text-sm mb-1"><span>Ingresos vs Meta</span><span className="text-emerald-400 font-bold">{porcentajeMeta}%</span></div>
+                            <div className="w-full bg-slate-800 rounded-full h-2.5"><div className="bg-gradient-to-r from-emerald-500 to-teal-400 h-2.5 rounded-full transition-all duration-1000" style={{ width: `${porcentajeMeta}%` }}></div></div>
+                            <p className="text-xs text-slate-500 mt-1">Meta: ${metaMensual.toLocaleString('es-CL')}</p>
+                        </div>
+                    </div>
+                </div>
+                <div className="flex flex-col justify-center">
+                    <h4 className="text-white font-bold text-lg mb-4">KPIs Operativos</h4>
+                    <div className="grid grid-cols-2 gap-4">
+                        <div className="bg-slate-800/50 p-3 rounded-lg border border-slate-700"><p className="text-2xl font-bold text-white">{reservas.length}</p><p className="text-xs text-slate-400 uppercase tracking-wide">Reservas</p></div>
+                        <div className="bg-slate-800/50 p-3 rounded-lg border border-slate-700"><p className="text-2xl font-bold text-amber-400">{cabanas.length}</p><p className="text-xs text-slate-400 uppercase tracking-wide">Cabañas</p></div>
+                        <div className="bg-slate-800/50 p-3 rounded-lg border border-slate-700"><p className="text-2xl font-bold text-emerald-400">{porcentajeUpselling}%</p><p className="text-xs text-slate-400 uppercase tracking-wide">Upselling</p></div>
+                        <div className="bg-slate-800/50 p-3 rounded-lg border border-slate-700"><p className="text-2xl font-bold text-indigo-400">{servicios.length}</p><p className="text-xs text-slate-400 uppercase tracking-wide">Servicios</p></div>
+                    </div>
+                </div>
+                <div>
+                    <h4 className="text-white font-bold text-lg mb-4">Enlaces</h4>
+                    <ul className="space-y-2 text-sm">
+                        <li><a href="/" target="_blank" className="hover:text-white transition-colors">🌐 Ver Sitio Web</a></li>
+                        <li><a href="/disponibilidad" target="_blank" className="hover:text-white transition-colors">📅 Ver Disponibilidad</a></li>
+                    </ul>
+                </div>
+            </div>
+        </footer>
+    );
 };
 
-// Helper format moneda
+const emptyCabana = { id: null, nombre: "", descripcion: "", capacidad: "", precio_noche: "", estado: "disponible", imagen_url: "", zona: "", dormitorios: "", banos: "", metros_cuadrados: "" };
+const emptyServicio = { id: null, nombre: "", descripcion: "", precio: "", tipo: "amenity", activo: true, imagen: null };
+
+// Helpers
 const money = (value) => {
   if (value == null || Number.isNaN(Number(value))) return "$ 0";
-  const n = Number(value);
-  return `$ ${n.toLocaleString("es-CL")}`;
+  return `$ ${Number(value).toLocaleString("es-CL")}`;
 };
 
-// Noches entre dos fechas
 function diffNoches(desde, hasta) {
   const d1 = new Date(desde);
   const d2 = new Date(hasta);
@@ -43,920 +85,509 @@ function diffNoches(desde, hasta) {
   return noches > 0 ? noches : 1;
 }
 
-// Badge para estado de pago
 function getBadgePago(reserva) {
   const estado = reserva.estado_pago;
-
-  if (!estado) {
-    return <span className="text-[11px] text-slate-500">Sin comprobante</span>;
-  }
-
-  if (estado === "pendiente") {
-    return (
-      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] bg-amber-100 text-amber-800">
-        En revisión
-      </span>
-    );
-  }
-
-  if (estado === "validado") {
-    return (
-      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] bg-emerald-100 text-emerald-800">
-        Pago confirmado
-      </span>
-    );
-  }
-
-  // cualquier otro estado (ej: rechazado)
-  return (
-    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] bg-red-100 text-red-700">
-      Rechazado
-    </span>
-  );
+  if (!estado) return <span className="text-[10px] text-slate-500">Sin comprobante</span>;
+  if (estado === "pendiente") return <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] bg-amber-100 text-amber-800">En revisión</span>;
+  if (estado === "validado") return <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] bg-emerald-100 text-emerald-800">Pago confirmado</span>;
+  return <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] bg-red-100 text-red-700">Rechazado</span>;
 }
 
 export default function AdminDashboard() {
   const navigate = useNavigate();
-
   const [me, setMe] = useState(null);
-  const [loadingMe, setLoadingMe] = useState(true);
+  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState('reservas'); // 'reservas' | 'cabanas' | 'servicios'
 
+  // DATA
   const [reservas, setReservas] = useState([]);
-  const [loadingReservas, setLoadingReservas] = useState(false);
-
   const [cabanas, setCabanas] = useState([]);
-  const [loadingCabanas, setLoadingCabanas] = useState(false);
+  const [servicios, setServicios] = useState([]);
 
+  // FORMS
   const [formCabana, setFormCabana] = useState(emptyCabana);
-  const [savingCabana, setSavingCabana] = useState(false);
-  const [validandoPagoId, setValidandoPagoId] = useState(null);
+  const [imagenesCabana, setImagenesCabana] = useState([]);
+  const [archivosSeleccionados, setArchivosSeleccionados] = useState(null);
+  
+  const [formServicio, setFormServicio] = useState(emptyServicio);
+  const [archivoServicio, setArchivoServicio] = useState(null);
 
-  // filtros para el PDF
+  const [saving, setSaving] = useState(false);
+  const [subiendoImagen, setSubiendoImagen] = useState(false);
+  const [validandoPagoId, setValidandoPagoId] = useState(null);
+  
+  // FILTROS
   const [filtroDesde, setFiltroDesde] = useState("");
   const [filtroHasta, setFiltroHasta] = useState("");
 
   // modal de huéspedes
   const [reservaHuespedes, setReservaHuespedes] = useState(null);
 
-  // -----------------------------
-  // Cargar información inicial
-  // -----------------------------
   useEffect(() => {
-    (async () => {
-      try {
-        setLoadingMe(true);
-        const user = await fetchMe();
-        setMe(user);
-
-        const roles = (user.roles || []).map((r) => r.name || r);
-        if (!roles.includes("admin")) {
-          toast.error("No tienes permisos de administrador.");
-          navigate("/", { replace: true });
-          return;
-        }
-
-        await Promise.all([loadReservas(), loadCabanas()]);
-      } catch (e) {
-        console.error(e);
-        toast.error(e.message || "No se pudo cargar el panel.");
-        navigate("/login?redirect=/admin", { replace: true });
-      } finally {
-        setLoadingMe(false);
-      }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    cargarTodo();
   }, []);
 
-  async function loadReservas() {
+  async function cargarTodo() {
+    setLoading(true);
     try {
-      setLoadingReservas(true);
-      const data = await fetchReservasAdmin(); // todas las reservas con cabana, user, huespedes
-      setReservas(Array.isArray(data) ? data : data.data || []);
-    } catch (e) {
-      console.error(e);
-      toast.error(e.message || "No se pudieron cargar las reservas.");
-    } finally {
-      setLoadingReservas(false);
-    }
-  }
-
-  async function loadCabanas() {
-    try {
-      setLoadingCabanas(true);
-      const data = await fetchCabanas();
-      setCabanas(Array.isArray(data) ? data : data.data || []);
-    } catch (e) {
-      console.error(e);
-      toast.error(e.message || "No se pudieron cargar las cabañas.");
-    } finally {
-      setLoadingCabanas(false);
-    }
-  }
-
-  // -----------------------------
-  // Formulario de cabañas
-  // -----------------------------
-  function handleCabanaChange(e) {
-    const { name, value } = e.target;
-    setFormCabana((prev) => ({
-      ...prev,
-      [name]: value,
-    }));
-  }
-
-  function handleEditCabana(cabana) {
-    setFormCabana({
-      id: cabana.id,
-      nombre: cabana.nombre || "",
-      descripcion: cabana.descripcion || "",
-      capacidad: cabana.capacidad?.toString() || "",
-      precio_noche: cabana.precio_noche?.toString() || "",
-      estado: cabana.estado || "disponible",
-      imagen_url: cabana.imagen_url || "",
-    });
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  }
-
-  function handleResetForm() {
-    setFormCabana(emptyCabana);
-  }
-
-  async function handleSubmitCabana(e) {
-    e.preventDefault();
-    if (savingCabana) return;
-
-    try {
-      setSavingCabana(true);
-
-      const payload = {
-        nombre: formCabana.nombre,
-        descripcion: formCabana.descripcion,
-        capacidad: Number(formCabana.capacidad),
-        precio_noche: Number(formCabana.precio_noche),
-        estado: formCabana.estado,
-        imagen_url: formCabana.imagen_url || null,
-      };
-
-      if (!payload.nombre || !payload.capacidad || !payload.precio_noche) {
-        toast.error("Nombre, capacidad y precio/noche son obligatorios.");
+      const user = await fetchMe();
+      const roles = (user.roles || []).map((r) => r.name || r);
+      if (!roles.includes("admin")) {
+        toast.error("Acceso denegado");
+        navigate("/");
         return;
       }
+      setMe(user);
 
-      if (formCabana.id) {
-        await updateCabana(formCabana.id, payload);
-        toast.success("Cabaña actualizada.");
-      } else {
-        await createCabana(payload);
-        toast.success("Cabaña creada.");
-      }
+      const [resData, cabData, servData] = await Promise.all([
+        fetchReservasAdmin(),
+        fetchCabanas(),
+        fetchServiciosAdmin().catch(() => [])
+      ]);
 
-      handleResetForm();
-      await loadCabanas();
+      setReservas(Array.isArray(resData) ? resData : resData.data || []);
+      setCabanas(Array.isArray(cabData) ? cabData : cabData.data || []);
+      setServicios(Array.isArray(servData) ? servData : []);
+
     } catch (e) {
       console.error(e);
-      toast.error(e.message || "Error al guardar la cabaña.");
+      toast.error("Error cargando panel");
     } finally {
-      setSavingCabana(false);
+      setLoading(false);
     }
   }
 
-  async function handleDeleteCabana(cabana) {
-    if (!window.confirm(`¿Eliminar la cabaña "${cabana.nombre}"?`)) return;
+  // --- LÓGICA RESERVAS ---
+  async function handleValidarPago(r) {
+    if(!confirm("¿Confirmar pago?")) return;
+    try {
+        setValidandoPagoId(r.ultimo_pago.id);
+        await validarPago(r.ultimo_pago.id);
+        toast.success("Pago validado");
+        const resData = await fetchReservasAdmin();
+        setReservas(resData);
+    } catch(e) { toast.error("Error validando"); }
+    finally { setValidandoPagoId(null); }
+  }
+
+  // --- NUEVAS FUNCIONES OPERATIVAS (CHECK-IN / OUT) ---
+  async function handleCheckIn(id) {
+    if(!confirm("¿Confirmar Check-in del pasajero?")) return;
+    try {
+        await api(`/api/reservas/${id}/checkin`, { method: 'POST' });
+        toast.success("Check-in realizado");
+        cargarTodo(); // Recargar tabla
+    } catch { toast.error("Error al hacer check-in"); }
+  }
+
+  async function handleCheckOut(id) {
+    if(!confirm("¿Confirmar Check-out y liberar cabaña?")) return;
+    try {
+        await api(`/api/reservas/${id}/checkout`, { method: 'POST' });
+        toast.success("Check-out realizado");
+        cargarTodo();
+    } catch { toast.error("Error al hacer check-out"); }
+  }
+
+  // --- NUEVA LÓGICA PDF (PLAN B: HTML PRINT) ---
+  async function descargarReportePdf() {
+    const token = getToken();
+    if (!token) return toast.error("No hay sesión activa");
+
+    const toastId = toast.loading("Generando reporte...");
 
     try {
-      await deleteCabana(cabana.id);
-      toast.success("Cabaña eliminada.");
-      await loadCabanas();
-    } catch (e) {
-      console.error(e);
-      toast.error(e.message || "No se pudo eliminar la cabaña.");
-    }
-  }
+        const params = new URLSearchParams();
+        if (filtroDesde) params.append("desde", filtroDesde);
+        if (filtroHasta) params.append("hasta", filtroHasta);
 
-  async function handleLogout() {
-    try {
-      await logoutUser();
-    } catch {
-      // ignoramos error
-    } finally {
-      toast.success("Sesión cerrada.");
-      navigate("/", { replace: true });
-    }
-  }
+        const response = await fetch(`${API_URL}/api/reportes/ocupacion/pdf?${params.toString()}`, {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Accept': 'text/html'
+            }
+        });
 
-  // -----------------------------
-  // Validar pago (admin)
-  // -----------------------------
-  async function handleValidarPago(reserva) {
-    const pago = reserva.ultimo_pago;
-    if (!pago) {
-      toast.error("No hay comprobante para validar en esta reserva.");
-      return;
-    }
+        if (!response.ok) throw new Error("Error generando reporte");
 
-    if (!window.confirm("¿Confirmar el pago de esta reserva?")) return;
-
-    try {
-      setValidandoPagoId(pago.id);
-      await validarPago(pago.id);
-      toast.success("Pago validado y reserva actualizada.");
-      await loadReservas();
-    } catch (e) {
-      console.error(e);
-      toast.error(e.message || "No se pudo validar el pago.");
-    } finally {
-      setValidandoPagoId(null);
-    }
-  }
-
-  // -----------------------------
-  // Descarga de reporte PDF
-  // -----------------------------
-  function descargarReportePdf() {
-    const params = new URLSearchParams();
-    if (filtroDesde) params.append("desde", filtroDesde);
-    if (filtroHasta) params.append("hasta", filtroHasta);
-
-    fetch(`${API_URL}/api/reportes/ocupacion/pdf?${params.toString()}`, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${getToken()}`,
-      },
-    })
-      .then((res) => {
-        if (!res.ok) {
-          throw new Error("No se pudo generar el PDF");
+        const htmlContent = await response.text();
+        const printWindow = window.open('', '_blank');
+        if (!printWindow) {
+            toast.error("Por favor permite las ventanas emergentes", { id: toastId });
+            return;
         }
-        return res.blob();
-      })
-      .then((blob) => {
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = "reporte_ocupacion.pdf";
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        window.URL.revokeObjectURL(url);
-        toast.success("Reporte PDF descargado.");
-      })
-      .catch((err) => {
-        console.error(err);
-        toast.error(err.message || "Error al descargar el reporte.");
+
+        printWindow.document.write(htmlContent);
+        printWindow.document.close(); 
+        
+        setTimeout(() => {
+            printWindow.focus();
+            printWindow.print();
+        }, 500);
+
+        toast.success("Reporte generado", { id: toastId });
+
+    } catch (error) {
+        console.error(error);
+        toast.error("Error al generar reporte", { id: toastId });
+    }
+  }
+
+  // --- LÓGICA CABAÑAS ---
+  async function saveCabana(e) {
+    e.preventDefault();
+    setSaving(true);
+    try {
+        if(formCabana.id) await updateCabana(formCabana.id, formCabana);
+        else await createCabana(formCabana);
+        toast.success("Cabaña guardada");
+        setFormCabana(emptyCabana);
+        const data = await fetchCabanas();
+        setCabanas(data);
+    } catch(e) { toast.error("Error guardando cabaña"); }
+    finally { setSaving(false); }
+  }
+
+  async function editarCabana(c) {
+      setFormCabana(c);
+      setActiveTab('cabanas');
+      window.scrollTo(0,0);
+      try {
+          const imgs = await fetchCabanaImagenes(c.id);
+          setImagenesCabana(imgs);
+      } catch {}
+  }
+
+  async function subirFotosCabana() {
+      if(!archivosSeleccionados) return;
+      setSubiendoImagen(true);
+      try {
+          for(let i=0; i<archivosSeleccionados.length; i++) {
+              await uploadCabanaImagen(formCabana.id, archivosSeleccionados[i]);
+          }
+          toast.success("Fotos subidas");
+          const imgs = await fetchCabanaImagenes(formCabana.id);
+          setImagenesCabana(imgs);
+          setArchivosSeleccionados(null);
+          document.getElementById('fileInputMultiple').value = "";
+      } catch { toast.error("Error subiendo fotos"); }
+      finally { setSubiendoImagen(false); }
+  }
+
+  async function borrarFotoCabana(id) {
+      if(!confirm("¿Borrar foto?")) return;
+      await deleteCabanaImagen(id);
+      setImagenesCabana(prev => prev.filter(img => img.id !== id));
+  }
+
+  async function handleSetPortada(rutaImagen) {
+      if (!formCabana.id) return;
+      const urlCompleta = rutaImagen.startsWith("http") ? rutaImagen : `${API_URL}/storage/${rutaImagen}`;
+      try {
+          await updateCabana(formCabana.id, { ...formCabana, imagen_url: urlCompleta });
+          setFormCabana(prev => ({ ...prev, imagen_url: urlCompleta }));
+          toast.success("Portada actualizada");
+          const data = await fetchCabanas();
+          setCabanas(data);
+      } catch { toast.error("Error al actualizar portada"); }
+  }
+
+  // --- LÓGICA SERVICIOS ---
+  async function saveServicio(e) {
+      e.preventDefault();
+      setSaving(true);
+      const formData = new FormData();
+      Object.keys(formServicio).forEach(key => {
+          if (key !== 'imagen' && formServicio[key] !== null) formData.append(key, formServicio[key]);
       });
+      formData.set('activo', formServicio.activo ? '1' : '0');
+      if (archivoServicio) formData.append('imagen', archivoServicio);
+
+      try {
+          if (formServicio.id) await updateServicio(formServicio.id, formData);
+          else await createServicio(formData);
+          
+          toast.success(formServicio.id ? "Servicio actualizado" : "Servicio creado");
+          setFormServicio(emptyServicio);
+          setArchivoServicio(null);
+          const data = await fetchServiciosAdmin();
+          setServicios(data);
+      } catch (e) {
+          console.error(e);
+          toast.error("Error al guardar servicio");
+      } finally {
+          setSaving(false);
+      }
   }
 
-  // -----------------------------
+  async function deleteServicioHandler(id) {
+      if(!confirm("¿Eliminar servicio?")) return;
+      try {
+          await deleteServicio(id);
+          toast.success("Eliminado");
+          setServicios(prev => prev.filter(s => s.id !== id));
+      } catch { toast.error("Error al eliminar"); }
+  }
+
   // Modal huéspedes
-  // -----------------------------
-  function abrirHuespedes(reserva) {
-    setReservaHuespedes(reserva);
-  }
+  function abrirHuespedes(reserva) { setReservaHuespedes(reserva); }
+  function cerrarHuespedes() { setReservaHuespedes(null); }
 
-  function cerrarHuespedes() {
-    setReservaHuespedes(null);
-  }
-
-  // -----------------------------
-  // Render
-  // -----------------------------
-  if (loadingMe) {
-    return <p className="p-6">Cargando panel de administración…</p>;
-  }
+  if (loading) return <div className="min-h-screen flex items-center justify-center">Cargando Admin...</div>;
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-6 space-y-8">
-      {/* Encabezado */}
-      <header className="flex items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900">
-            Panel de administración
-          </h1>
-          {me && (
-            <p className="text-sm text-slate-500">
-              Bienvenido(a), <span className="font-semibold">{me.name}</span>
-            </p>
-          )}
-        </div>
-        <div className="flex items-center gap-2 text-sm">
-          <Link
-            to="/"
-            className="px-3 py-1.5 rounded border border-slate-300 hover:bg-slate-50"
-          >
-            Sitio público
-          </Link>
-          <Link
-            to="/cuenta"
-            className="px-3 py-1.5 rounded border border-slate-300 hover:bg-slate-50"
-          >
-            Mi cuenta
-          </Link>
-          <button
-            onClick={handleLogout}
-            className="px-3 py-1.5 rounded bg-red-500 text-white hover:bg-red-600"
-          >
-            Cerrar sesión
-          </button>
+    <div className="min-h-screen bg-slate-100 pb-20 font-sans">
+      <header className="bg-slate-900 text-white px-6 py-4 shadow-md sticky top-0 z-50">
+        <div className="max-w-7xl mx-auto flex justify-between items-center">
+            <h1 className="text-xl font-bold tracking-tight flex items-center gap-2">
+                ⚡ Panel de Control
+            </h1>
+            <div className="flex gap-4 text-sm items-center">
+                <span className="opacity-80">{me?.name}</span>
+                <Link to="/" className="hover:text-emerald-400">Ver Web</Link>
+                <button onClick={() => { logoutUser(); navigate('/'); }} className="bg-red-600 px-3 py-1 rounded hover:bg-red-700 font-bold text-xs">SALIR</button>
+            </div>
         </div>
       </header>
 
-      {/* Sección de reservas + PDF */}
-      <section className="bg-white border rounded-2xl shadow-sm p-4 md:p-6">
-        <div className="flex items-center justify-between mb-4 gap-4">
-          <h2 className="text-lg font-semibold text-slate-900">
-            Reservas registradas
-          </h2>
-          {loadingReservas && (
-            <span className="text-xs text-slate-500">Cargando…</span>
-          )}
+      <main className="max-w-7xl mx-auto px-4 mt-8 min-h-[60vh]">
+        
+        {/* NAVEGACIÓN TABS */}
+        <div className="flex gap-1 mb-6 border-b border-slate-300">
+            <button onClick={() => setActiveTab('reservas')} className={`px-6 py-3 font-bold text-sm rounded-t-lg transition-all ${activeTab === 'reservas' ? 'bg-white text-emerald-800 border-x border-t border-slate-300 shadow-sm' : 'bg-transparent text-slate-500 hover:bg-slate-200'}`}>📅 Reservas</button>
+            <button onClick={() => setActiveTab('cabanas')} className={`px-6 py-3 font-bold text-sm rounded-t-lg transition-all ${activeTab === 'cabanas' ? 'bg-white text-emerald-800 border-x border-t border-slate-300 shadow-sm' : 'bg-transparent text-slate-500 hover:bg-slate-200'}`}>🏡 Cabañas</button>
+            <button onClick={() => setActiveTab('servicios')} className={`px-6 py-3 font-bold text-sm rounded-t-lg transition-all ${activeTab === 'servicios' ? 'bg-white text-emerald-800 border-x border-t border-slate-300 shadow-sm' : 'bg-transparent text-slate-500 hover:bg-slate-200'}`}>✨ Servicios</button>
         </div>
 
-        {/* Filtros y botón de PDF */}
-        <div className="flex flex-wrap items-end gap-3 mb-4">
-          <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">
-              Desde
-            </label>
-            <input
-              type="date"
-              value={filtroDesde}
-              onChange={(e) => setFiltroDesde(e.target.value)}
-              className="border rounded-md px-2 py-1 text-sm"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">
-              Hasta
-            </label>
-            <input
-              type="date"
-              value={filtroHasta}
-              onChange={(e) => setFiltroHasta(e.target.value)}
-              className="border rounded-md px-2 py-1 text-sm"
-            />
-          </div>
-          <button
-            type="button"
-            onClick={descargarReportePdf}
-            className="px-4 py-2 rounded-md bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700"
-          >
-            📄 Descargar reporte PDF
-          </button>
-        </div>
+        {/* TAB: RESERVAS */}
+        {activeTab === 'reservas' && (
+            <div className="bg-white rounded-b-xl rounded-tr-xl shadow-sm p-6 animate-fade-in border border-slate-200">
+                <div className="flex flex-wrap justify-between items-center mb-6 gap-4">
+                    <h2 className="font-bold text-lg text-slate-800">Listado de Reservas</h2>
+                    <div className="flex gap-2 items-center bg-slate-100 p-2 rounded-lg">
+                        <input type="date" value={filtroDesde} onChange={e => setFiltroDesde(e.target.value)} className="border rounded px-2 py-1 text-sm outline-none" />
+                        <span className="text-slate-400">-</span>
+                        <input type="date" value={filtroHasta} onChange={e => setFiltroHasta(e.target.value)} className="border rounded px-2 py-1 text-sm outline-none" />
+                        <button onClick={descargarReportePdf} className="bg-slate-800 text-white px-4 py-1.5 rounded text-sm hover:bg-slate-700 ml-2 font-medium">📄 Generar Reporte</button>
+                    </div>
+                </div>
+                <div className="overflow-x-auto rounded-lg border border-slate-200">
+                    <table className="w-full text-sm text-left">
+                        <thead className="bg-slate-50 text-slate-500 uppercase font-bold text-xs">
+                            <tr><th className="px-4 py-3">ID</th><th className="px-4 py-3">Cabaña</th><th className="px-4 py-3">Cliente</th><th className="px-4 py-3">Fechas</th><th className="px-4 py-3">Estado</th><th className="px-4 py-3">Pago / Acciones</th><th className="px-4 py-3">Pasajeros</th></tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                            {reservas.map(r => (
+                                <tr key={r.id} className="hover:bg-slate-50 transition-colors">
+                                    <td className="px-4 py-3 font-mono text-slate-400 text-xs">#{r.id}</td>
+                                    <td className="px-4 py-3 font-medium text-slate-700">{r.cabana?.nombre}</td>
+                                    <td className="px-4 py-3"><div className="font-bold text-slate-800">{r.user?.name}</div><div className="text-xs text-slate-500">{r.user?.email}</div></td>
+                                    <td className="px-4 py-3"><div className="text-xs font-medium">{r.fecha_inicio.slice(0,10)} ➝ {r.fecha_fin.slice(0,10)}</div><div className="text-[10px] text-slate-400 mt-0.5">{diffNoches(r.fecha_inicio, r.fecha_fin)} noches</div></td>
+                                    <td className="px-4 py-3"><span className="bg-slate-100 text-slate-600 px-2 py-1 rounded text-xs font-bold uppercase">{r.estado}</span></td>
+                                    <td className="px-4 py-3">
+                                        {/* BADGE DE PAGO */}
+                                        {getBadgePago(r)}
+                                        
+                                        {/* VALIDACIÓN DE PAGO */}
+                                        {r.estado_pago === 'pendiente' && (
+                                            <button onClick={() => handleValidarPago(r)} className="block mt-1 text-xs text-emerald-600 font-bold hover:underline mb-2">
+                                                {validandoPagoId === r.ultimo_pago?.id ? '...' : 'Validar'}
+                                            </button>
+                                        )}
+                                        {r.ultimo_pago?.archivo_url && (
+                                            <a href={r.ultimo_pago.archivo_url} target="_blank" className="block text-[10px] text-blue-500 hover:underline mb-2">Ver comprobante 🔗</a>
+                                        )}
 
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-sm border-t border-b">
-            <thead className="bg-slate-50">
-              <tr>
-                <th className="px-3 py-2 text-left border-b text-slate-500">
-                  #
-                </th>
-                <th className="px-3 py-2 text-left border-b text-slate-500">
-                  Cabaña
-                </th>
-                <th className="px-3 py-2 text-left border-b text-slate-500">
-                  Cliente
-                </th>
-                <th className="px-3 py-2 text-left border-b text-slate-500">
-                  Huéspedes
-                </th>
-                <th className="px-3 py-2 text-left border-b text-slate-500">
-                  Fechas
-                </th>
-                <th className="px-3 py-2 text-left border-b text-slate-500">
-                  Estado
-                </th>
-                <th className="px-3 py-2 text-left border-b text-slate-500">
-                  Pago
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {reservas.length === 0 && (
-                <tr>
-                  <td
-                    colSpan={7}
-                    className="px-3 py-4 text-center text-slate-500"
-                  >
-                    No hay reservas registradas.
-                  </td>
-                </tr>
-              )}
+                                        {/* ACCIONES OPERATIVAS (CHECK-IN / CHECK-OUT) */}
+                                        <div className="flex gap-1 mt-2">
+                                            {(r.estado === 'confirmada' || r.estado === 'pagada') && (
+                                                <button onClick={() => handleCheckIn(r.id)} className="bg-blue-600 text-white text-[10px] px-2 py-1 rounded hover:bg-blue-700 shadow" title="Marcar entrada">
+                                                    📥 Check-in
+                                                </button>
+                                            )}
+                                            {r.estado === 'checkin' && (
+                                                <button onClick={() => handleCheckOut(r.id)} className="bg-slate-700 text-white text-[10px] px-2 py-1 rounded hover:bg-slate-800 shadow" title="Marcar salida">
+                                                    📤 Check-out
+                                                </button>
+                                            )}
+                                        </div>
+                                    </td>
+                                    <td className="px-4 py-3">
+                                        <button onClick={() => abrirHuespedes(r)} className="text-xs bg-slate-100 px-2 py-1 rounded hover:bg-slate-200">Ver ({r.huespedes?.length || 0})</button>
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        )}
 
-              {reservas.map((r, idx) => {
-                const cabanaNombre = r.cabana?.nombre || `#${r.cabana_id}`;
-                const clienteNombre = r.user?.name || `ID ${r.user_id}`;
-                const clienteEmail = r.user?.email || "";
-                const huespedes = Array.isArray(r.huespedes)
-                  ? r.huespedes
-                  : [];
-
-                const inicio = r.fecha_inicio?.slice(0, 10) || "";
-                const fin = r.fecha_fin?.slice(0, 10) || "";
-                const noches = diffNoches(r.fecha_inicio, r.fecha_fin);
-                const cantPersonas = r.cantidad_personas || 1;
-
-                // montos
-                const totalReserva =
-                  typeof r.monto_total === "number"
-                    ? r.monto_total
-                    : noches && r.precio_noche
-                    ? noches * r.precio_noche
-                    : 0;
-
-                // seña mínima sugerida (30% del total)
-                const seniaSugerida =
-                  totalReserva > 0 ? Math.round(totalReserva * 0.3) : 0;
-
-                // Monto pagado:
-                // - Si hay senia_monto guardada, usamos eso.
-                // - Si hay monto en el último pago, usamos ese.
-                // - Si no hay nada pero el pago está validado, asumimos al menos la seña sugerida (30%).
-                let pagado = 0;
-
-                if (r.estado_pago === "validado") {
-                  if (typeof r.senia_monto === "number" && r.senia_monto > 0) {
-                    pagado = r.senia_monto;
-                  } else if (
-                    r.ultimo_pago &&
-                    typeof r.ultimo_pago.monto === "number" &&
-                    r.ultimo_pago.monto > 0
-                  ) {
-                    pagado = r.ultimo_pago.monto;
-                  } else {
-                    // Fallback más realista: se asume que al menos se pagó la seña (30%)
-                    pagado = seniaSugerida;
-                  }
-                }
-
-                const saldo = Math.max(totalReserva - pagado, 0);
-                const porcPagado =
-                  totalReserva > 0
-                    ? Math.round((pagado / totalReserva) * 100)
-                    : 0;
-
-
-
-
-
-                const estadoColor =
-                  r.estado === "confirmada"
-                    ? "bg-emerald-100 text-emerald-700"
-                    : r.estado === "cancelada"
-                    ? "bg-red-100 text-red-700"
-                    : r.estado === "checkin"
-                    ? "bg-blue-100 text-blue-700"
-                    : r.estado === "pagada"
-                    ? "bg-purple-100 text-purple-800"
-                    : "bg-slate-100 text-slate-700";
-
-                return (
-                  <tr key={r.id}>
-                    <td className="px-3 py-2 border-b align-top text-slate-500">
-                      {idx + 1}
-                    </td>
-                    <td className="px-3 py-2 border-b align-top">
-                      <span className="font-medium text-slate-800">
-                        {cabanaNombre}
-                      </span>
-                      {r.con_mascotas && (
-                        <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-[11px] bg-emerald-50 text-emerald-700 border border-emerald-100">
-                          🐾 Con mascota(s)
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 border-b align-top text-slate-700">
-                      {clienteNombre}
-                      {clienteEmail && (
-                        <div className="text-[11px] text-slate-400">
-                          {clienteEmail}
+        {/* TAB CABAÑAS */}
+        {activeTab === 'cabanas' && (
+            <div className="bg-white rounded-b-xl rounded-tr-xl shadow-sm p-6 animate-fade-in border border-slate-200">
+                {/* FORMULARIO CABAÑA */}
+                <div className="bg-indigo-50/50 p-6 rounded-xl mb-10 border border-indigo-100">
+                    <h3 className="font-bold text-indigo-900 mb-6 flex items-center gap-2">{formCabana.id ? '✏️ Editar Cabaña' : '➕ Nueva Cabaña'}</h3>
+                    <form onSubmit={saveCabana} className="grid md:grid-cols-3 gap-5">
+                        <div className="space-y-1"><label className="text-xs font-bold text-slate-500 uppercase">Nombre</label><input value={formCabana.nombre} onChange={e => setFormCabana({...formCabana, nombre: e.target.value})} className="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none" required /></div>
+                        <div className="space-y-1"><label className="text-xs font-bold text-slate-500 uppercase">Zona</label><input value={formCabana.zona} onChange={e => setFormCabana({...formCabana, zona: e.target.value})} className="w-full border rounded-lg px-3 py-2 text-sm" /></div>
+                        <div className="space-y-1"><label className="text-xs font-bold text-slate-500 uppercase">Capacidad</label><input type="number" value={formCabana.capacidad} onChange={e => setFormCabana({...formCabana, capacidad: e.target.value})} className="w-full border rounded-lg px-3 py-2 text-sm" required /></div>
+                        <div className="space-y-1"><label className="text-xs font-bold text-slate-500 uppercase">Precio Noche</label><input type="number" value={formCabana.precio_noche} onChange={e => setFormCabana({...formCabana, precio_noche: e.target.value})} className="w-full border rounded-lg px-3 py-2 text-sm" required /></div>
+                        <div className="space-y-1 md:col-span-2"><label className="text-xs font-bold text-slate-500 uppercase">Descripción</label><textarea value={formCabana.descripcion} onChange={e => setFormCabana({...formCabana, descripcion: e.target.value})} className="w-full border rounded-lg px-3 py-2 text-sm h-[42px]" /></div>
+                        <div className="md:col-span-3 flex gap-3 justify-end pt-2">
+                            {formCabana.id && <button type="button" onClick={() => {setFormCabana(emptyCabana); setImagenesCabana([]);}} className="px-4 py-2 border rounded-lg text-sm text-slate-600 hover:bg-white">Cancelar</button>}
+                            <button type="submit" disabled={saving} className="px-6 py-2 bg-indigo-600 text-white rounded-lg text-sm font-bold hover:bg-indigo-700">{saving ? 'Guardando...' : 'Guardar Cabaña'}</button>
                         </div>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 border-b align-top">
-                      {huespedes.length === 0 ? (
-                        <span className="text-[11px] text-slate-500">
-                          Sin registro
-                        </span>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => abrirHuespedes(r)}
-                          className="px-2 py-1 text-[11px] rounded border border-slate-300 text-slate-700 hover:bg-slate-50"
-                        >
-                          Ver ({huespedes.length})
-                        </button>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 border-b align-top text-slate-700">
-                      {inicio} → {fin}
-                      {noches && (
-                        <div className="text-[11px] text-slate-400">
-                          {noches} noche{noches > 1 ? "s" : ""} ·{" "}
-                          {cantPersonas} persona
-                          {cantPersonas > 1 ? "s" : ""}
+                    </form>
+
+                    {formCabana.id && (
+                        <div className="mt-6 pt-6 border-t border-indigo-100">
+                            <p className="text-xs font-bold text-indigo-900 mb-3 uppercase">📸 Galería (Selecciona la portada con ⭐)</p>
+                            <div className="flex gap-3 mb-4 items-center">
+                                <input id="fileInputMultiple" type="file" multiple onChange={e => setArchivosSeleccionados(e.target.files)} className="text-xs text-slate-500" />
+                                <button onClick={subirFotosCabana} disabled={!archivosSeleccionados} className="bg-indigo-600 text-white px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-indigo-700 disabled:opacity-50">Subir</button>
+                            </div>
+                            <div className="flex gap-3 overflow-x-auto pb-2">
+                                {imagenesCabana.map(img => {
+                                    const rutaAbsoluta = img.ruta.startsWith('http') ? img.ruta : `${API_URL}/storage/${img.ruta}`;
+                                    const esPortada = formCabana.imagen_url === rutaAbsoluta;
+                                    return (
+                                        <div key={img.id} className={`relative w-24 h-24 shrink-0 group rounded-lg overflow-hidden border-2 ${esPortada ? 'border-emerald-500 ring-2 ring-emerald-200' : 'border-slate-200'}`}>
+                                            <img src={rutaAbsoluta} className="w-full h-full object-cover" />
+                                            {esPortada && <div className="absolute top-0 left-0 bg-emerald-500 text-white text-[8px] px-1 font-bold">PORTADA</div>}
+                                            <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition flex flex-col items-center justify-center gap-1">
+                                                {!esPortada && <button type="button" onClick={() => handleSetPortada(img.ruta)} className="bg-white text-emerald-600 text-[10px] px-2 py-1 rounded font-bold">⭐</button>}
+                                                <button type="button" onClick={() => borrarFotoCabana(img.id)} className="bg-red-600 text-white text-[10px] px-2 py-1 rounded">🗑️</button>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
                         </div>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 border-b align-top">
-                      <span
-                        className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${estadoColor}`}
-                      >
-                        {r.estado}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2 border-b align-top">
-                      <div className="flex flex-col gap-1 text-xs">
-                        {getBadgePago(r)}
+                    )}
+                </div>
 
-                        <div className="mt-1 space-y-0.5">
-                          <div>
-                            Total:{" "}
-                            <span className="font-semibold">
-                              {money(totalReserva)}
-                            </span>
-                          </div>
-                          <div>
-                            Pagado:{" "}
-                            <span className="font-semibold">
-                              {money(pagado)}
-                            </span>
-                            {totalReserva > 0 && (
-                              <span className="text-[11px] text-slate-500">
-                                {" "}
-                                ({porcPagado}%)
-                              </span>
-                            )}
-                          </div>
-                          <div>
-                            Saldo:{" "}
-                            <span className="font-semibold text-amber-700">
-                              {money(saldo)}
-                            </span>
-                          </div>
+                <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {cabanas.map(c => (
+                        <div key={c.id} className="border border-slate-200 rounded-xl p-5 hover:shadow-md transition bg-white flex flex-col justify-between h-full">
+                            <div>
+                                <div className="flex justify-between items-start mb-2"><h4 className="font-bold text-slate-800 text-lg">{c.nombre}</h4><span className={`px-2 py-1 rounded text-[10px] uppercase font-bold ${c.estado === 'disponible' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>{c.estado}</span></div>
+                                <div className="grid grid-cols-2 gap-2 text-xs text-slate-600 mb-4"><span>📍 {c.zona}</span><span>👥 {c.capacidad} pax</span><span>💲 {money(c.precio_noche)}</span><span>📐 {c.metros_cuadrados} m²</span></div>
+                            </div>
+                            <div className="pt-4 border-t border-slate-100 flex gap-2"><button onClick={() => editarCabana(c)} className="flex-1 bg-slate-50 text-slate-700 py-2 rounded-lg text-xs font-bold hover:bg-slate-100 border border-slate-200">Editar</button><button onClick={() => handleDeleteCabana(c)} className="px-3 py-2 text-red-500 hover:bg-red-50 rounded-lg text-xs font-bold border border-transparent hover:border-red-100">Eliminar</button></div>
                         </div>
+                    ))}
+                </div>
+            </div>
+        )}
 
-                        {r.ultimo_pago?.archivo_url && (
-                          <a
-                            href={r.ultimo_pago.archivo_url}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-[11px] text-blue-600 underline"
-                          >
-                            Ver comprobante
-                          </a>
-                        )}
-
-                        {r.estado_pago === "pendiente" && r.ultimo_pago && (
-                          <button
-                            type="button"
-                            onClick={() => handleValidarPago(r)}
-                            disabled={validandoPagoId === r.ultimo_pago.id}
-                            className="mt-1 px-2 py-0.5 text-[11px] rounded border border-emerald-500 text-emerald-700 hover:bg-emerald-50 disabled:opacity-60"
-                          >
-                            {validandoPagoId === r.ultimo_pago.id
-                              ? "Validando…"
-                              : "Confirmar pago"}
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      {/* Sección de cabañas */}
-      <section className="bg-white border rounded-2xl shadow-sm p-4 md:p-6 space-y-6">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-slate-900">
-            Gestión de cabañas
-          </h2>
-          {loadingCabanas && (
-            <span className="text-xs text-slate-500">Cargando…</span>
-          )}
-        </div>
-
-        {/* Formulario */}
-        <form
-          onSubmit={handleSubmitCabana}
-          className="grid gap-4 md:grid-cols-2 lg:grid-cols-3"
-        >
-          <div className="flex flex-col gap-1">
-            <label className="text-sm font-medium text-slate-700">
-              Nombre
-            </label>
-            <input
-              type="text"
-              name="nombre"
-              value={formCabana.nombre}
-              onChange={handleCabanaChange}
-              className="border rounded-md px-3 py-2 text-sm"
-              placeholder="Ej: Osiris"
-            />
-          </div>
-
-          <div className="flex flex-col gap-1">
-            <label className="text-sm font-medium text-slate-700">
-              Capacidad
-            </label>
-            <input
-              type="number"
-              name="capacidad"
-              value={formCabana.capacidad}
-              onChange={handleCabanaChange}
-              className="border rounded-md px-3 py-2 text-sm"
-              min={1}
-            />
-          </div>
-
-          <div className="flex flex-col gap-1">
-            <label className="text-sm font-medium text-slate-700">
-              Precio / noche
-            </label>
-            <input
-              type="number"
-              name="precio_noche"
-              value={formCabana.precio_noche}
-              onChange={handleCabanaChange}
-              className="border rounded-md px-3 py-2 text-sm"
-              min={0}
-            />
-          </div>
-
-          <div className="flex flex-col gap-1">
-            <label className="text-sm font-medium text-slate-700">
-              Estado
-            </label>
-            <select
-              name="estado"
-              value={formCabana.estado}
-              onChange={handleCabanaChange}
-              className="border rounded-md px-3 py-2 text-sm"
-            >
-              <option value="disponible">Disponible</option>
-              <option value="ocupado">Ocupado</option>
-              <option value="mantenimiento">En mantenimiento</option>
-            </select>
-          </div>
-
-          <div className="flex flex-col gap-1 md:col-span-2 lg:col-span-3">
-            <label className="text-sm font-medium text-slate-700">
-              Descripción
-            </label>
-            <textarea
-              name="descripcion"
-              value={formCabana.descripcion}
-              onChange={handleCabanaChange}
-              className="border rounded-md px-3 py-2 text-sm min-h-[60px]"
-              placeholder="Describe brevemente la cabaña, comodidades, etc."
-            />
-          </div>
-
-          <div className="flex flex-col gap-1 md:col-span-2 lg:col-span-3">
-            <label className="text-sm font-medium text-slate-700">
-              URL imagen principal
-            </label>
-            <input
-              type="text"
-              name="imagen_url"
-              value={formCabana.imagen_url}
-              onChange={handleCabanaChange}
-              className="border rounded-md px-3 py-2 text-sm"
-              placeholder="https://tuservidor.com/imagenes/osiris.jpg"
-            />
-            <p className="text-xs text-slate-500">
-              Pega aquí la URL de la imagen principal de la cabaña. Se mostrará
-              en el detalle y en las tarjetas públicas.
-            </p>
-          </div>
-
-          <div className="flex items-end gap-2 md:col-span-2 lg:col-span-3">
-            <button
-              type="submit"
-              disabled={savingCabana}
-              className="px-4 py-2 rounded-md bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 disabled:opacity-60"
-            >
-              {savingCabana
-                ? "Guardando…"
-                : formCabana.id
-                ? "Actualizar cabaña"
-                : "Crear cabaña"}
-            </button>
-            {formCabana.id && (
-              <button
-                type="button"
-                onClick={handleResetForm}
-                className="px-3 py-2 rounded-md border border-slate-300 text-sm hover:bg-slate-50"
-              >
-                Cancelar edición
-              </button>
-            )}
-          </div>
-        </form>
-
-        {/* Tabla de cabañas */}
-        <div className="border-t pt-4">
-          <h3 className="text-sm font-semibold text-slate-800 mb-3">
-            Cabañas registradas
-          </h3>
-
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm border-t border-b">
-              <thead className="bg-slate-50">
-                <tr>
-                  <th className="px-3 py-2 text-left border-b text-slate-500">
-                    #
-                  </th>
-                  <th className="px-3 py-2 text-left border-b text-slate-500">
-                    Cabaña
-                  </th>
-                  <th className="px-3 py-2 text-left border-b text-slate-500">
-                    Capacidad
-                  </th>
-                  <th className="px-3 py-2 text-left border-b text-slate-500">
-                    Precio / noche
-                  </th>
-                  <th className="px-3 py-2 text-left border-b text-slate-500">
-                    Estado
-                  </th>
-                  <th className="px-3 py-2 text-left border-b text-slate-500">
-                    Imagen
-                  </th>
-                  <th className="px-3 py-2 text-left border-b text-slate-500">
-                    Acciones
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {cabanas.length === 0 && (
-                  <tr>
-                    <td
-                      colSpan={7}
-                      className="px-3 py-4 text-center text-slate-500"
-                    >
-                      No hay cabañas registradas.
-                    </td>
-                  </tr>
-                )}
-
-                {cabanas.map((c, idx) => {
-                  const estadoColor =
-                    c.estado === "disponible"
-                      ? "bg-emerald-100 text-emerald-700"
-                      : c.estado === "ocupado"
-                      ? "bg-blue-100 text-blue-700"
-                      : "bg-amber-100 text-amber-700";
-
-                  const thumb =
-                    c.imagen_url && c.imagen_url.trim() !== ""
-                      ? c.imagen_url
-                      : "https://picsum.photos/seed/cabana-thumb/120/80";
-
-                  return (
-                    <tr key={c.id}>
-                      <td className="px-3 py-2 border-b align-top text-slate-500">
-                        {idx + 1}
-                      </td>
-                      <td className="px-3 py-2 border-b align-top">
-                        <div className="font-medium text-slate-800">
-                          {c.nombre}
+        {/* TAB SERVICIOS */}
+        {activeTab === 'servicios' && (
+            <div className="bg-white rounded-b-xl rounded-tr-xl shadow-sm p-6 animate-fade-in border border-slate-200">
+                <div className="bg-amber-50/50 p-6 rounded-xl mb-10 border border-amber-100">
+                    <h3 className="font-bold text-amber-900 mb-6 flex items-center gap-2">{formServicio.id ? '✏️ Editar Servicio' : '✨ Nuevo Servicio / Tour'}</h3>
+                    <form onSubmit={saveServicio} className="grid md:grid-cols-4 gap-5">
+                        <div className="md:col-span-2 space-y-1"><label className="text-xs font-bold text-slate-500 uppercase">Nombre</label><input value={formServicio.nombre} onChange={e => setFormServicio({...formServicio, nombre: e.target.value})} className="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-amber-500 outline-none" required /></div>
+                        <div className="space-y-1"><label className="text-xs font-bold text-slate-500 uppercase">Precio</label><input type="number" value={formServicio.precio} onChange={e => setFormServicio({...formServicio, precio: e.target.value})} className="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-amber-500 outline-none" required /></div>
+                        <div className="space-y-1"><label className="text-xs font-bold text-slate-500 uppercase">Categoría</label><select value={formServicio.tipo} onChange={e => setFormServicio({...formServicio, tipo: e.target.value})} className="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-amber-500 outline-none bg-white"><option value="amenity">Amenity</option><option value="transporte">Transporte</option><option value="experiencia">Experiencia</option></select></div>
+                        <div className="md:col-span-3 space-y-1"><label className="text-xs font-bold text-slate-500 uppercase">Descripción</label><input value={formServicio.descripcion} onChange={e => setFormServicio({...formServicio, descripcion: e.target.value})} className="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-amber-500 outline-none" /></div>
+                        <div className="flex flex-col justify-end"><input type="file" onChange={e => setArchivoServicio(e.target.files[0])} className="text-xs text-slate-500" accept="image/*" /></div>
+                        <div className="md:col-span-4 flex items-center justify-between pt-4 border-t border-amber-100/50 mt-2">
+                            <label className="flex items-center gap-2 cursor-pointer select-none"><input type="checkbox" checked={formServicio.activo} onChange={e => setFormServicio({...formServicio, activo: e.target.checked})} className="rounded text-amber-600 focus:ring-amber-500" /><span className="text-sm font-medium text-slate-700">Activo (Visible en web)</span></label>
+                            <div className="flex gap-3">
+                                {formServicio.id && <button type="button" onClick={() => {setFormServicio(emptyServicio); setArchivoServicio(null);}} className="px-4 py-2 border rounded-lg text-sm text-slate-600 hover:bg-white">Cancelar</button>}
+                                <button type="submit" disabled={saving} className="px-6 py-2 bg-amber-600 text-white rounded-lg text-sm font-bold hover:bg-amber-700 shadow-sm shadow-amber-200">{saving ? 'Guardando...' : 'Guardar Servicio'}</button>
+                            </div>
                         </div>
-                        <div className="text-xs text-slate-500 max-w-xs">
-                          {c.descripcion}
+                    </form>
+                </div>
+                <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {servicios.map(s => (
+                        <div key={s.id} className={`border border-slate-200 rounded-xl p-4 flex gap-4 transition bg-white hover:shadow-md ${!s.activo ? 'opacity-60 grayscale bg-slate-50' : ''}`}>
+                            <div className="w-20 h-20 bg-slate-100 rounded-lg overflow-hidden shrink-0 border border-slate-100">
+                                {s.imagen_url ? <img src={s.imagen_url} className="w-full h-full object-cover" alt={s.nombre} /> : <span className="w-full h-full flex items-center justify-center text-2xl">🏷️</span>}
+                            </div>
+                            <div className="flex-1 min-w-0 flex flex-col justify-between">
+                                <div>
+                                    <div className="flex justify-between items-start"><h4 className="font-bold text-slate-800 text-sm truncate pr-2" title={s.nombre}>{s.nombre}</h4><button onClick={() => deleteServicioHandler(s.id)} className="text-slate-300 hover:text-red-500 transition-colors">✕</button></div>
+                                    <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider mt-0.5">{s.tipo}</p>
+                                </div>
+                                <div className="flex justify-between items-end mt-2"><span className="text-emerald-700 font-bold text-lg">{money(s.precio)}</span><button onClick={() => { setFormServicio(s); window.scrollTo(0,0); }} className="text-xs bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-lg text-slate-600 font-bold hover:bg-slate-100">Editar</button></div>
+                            </div>
                         </div>
-                      </td>
-                      <td className="px-3 py-2 border-b align-top text-slate-700">
-                        {c.capacidad}
-                      </td>
-                      <td className="px-3 py-2 border-b align-top text-slate-700">
-                        {money(c.precio_noche)}
-                      </td>
-                      <td className="px-3 py-2 border-b align-top">
-                        <span
-                          className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${estadoColor}`}
-                        >
-                          {c.estado}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2 border-b align-top">
-                        <img
-                          src={thumb}
-                          alt={`Miniatura ${c.nombre}`}
-                          className="w-20 h-14 object-cover rounded border"
-                        />
-                      </td>
-                      <td className="px-3 py-2 border-b align-top">
-                        <div className="flex flex-wrap gap-1">
-                          <button
-                            type="button"
-                            onClick={() => handleEditCabana(c)}
-                            className="px-2 py-1 text-xs rounded border border-slate-300 hover:bg-slate-50"
-                          >
-                            Editar
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteCabana(c)}
-                            className="px-2 py-1 text-xs rounded border border-red-300 text-red-600 hover:bg-red-50"
-                          >
-                            Eliminar
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </section>
+                    ))}
+                </div>
+            </div>
+        )}
+
+      </main>
+
+      {/* FOOTER */}
+      <BusinessFooter reservas={reservas} servicios={servicios} cabanas={cabanas} />
 
       {/* MODAL HUÉSPEDES */}
       {reservaHuespedes && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-          <div className="bg-white rounded-2xl shadow-xl max-w-xl w-full mx-4 p-6 relative">
-            <button
-              onClick={cerrarHuespedes}
-              className="absolute top-3 right-3 text-slate-500 hover:text-slate-800 text-lg"
-            >
-              ×
-            </button>
-
-            <h3 className="text-lg font-semibold text-slate-900 mb-3">
-              Huéspedes de la reserva #{reservaHuespedes.id}
-            </h3>
-
-            {(() => {
-              const hs = Array.isArray(reservaHuespedes.huespedes)
-                ? reservaHuespedes.huespedes
-                : [];
-
-              if (hs.length === 0) {
-                return (
-                  <p className="text-sm text-slate-500">
-                    No hay huéspedes registrados para esta reserva.
-                  </p>
-                );
-              }
-
-              return (
-                <div className="overflow-x-auto">
-                  <table className="min-w-full text-sm border-t border-b">
-                    <thead className="bg-slate-50">
-                      <tr>
-                        <th className="px-3 py-2 text-left border-b text-slate-500">
-                          Nombre
-                        </th>
-                        <th className="px-3 py-2 text-left border-b text-slate-500">
-                          RUT / Doc.
-                        </th>
-                        <th className="px-3 py-2 text-left border-b text-slate-500">
-                          Teléfono
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {hs.map((h) => {
-                        const nombre =
-                          h.nombre || h.nombre_completo || h.full_name || "-";
-                        const rut =
-                          h.rut ||
-                          h.documento ||
-                          h.documento_identidad ||
-                          "—";
-                        const telefono =
-                          h.telefono || h.phone || h.celular || "—";
-
-                        return (
-                          <tr key={h.id || `${nombre}-${rut}`}>
-                            <td className="px-3 py-2 border-b">{nombre}</td>
-                            <td className="px-3 py-2 border-b">{rut}</td>
-                            <td className="px-3 py-2 border-b">{telefono}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              );
-            })()}
-
-            <div className="mt-4 flex justify-end">
-              <button
-                onClick={cerrarHuespedes}
-                className="px-3 py-1.5 text-xs rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50"
-              >
-                Cerrar
-              </button>
-            </div>
-          </div>
-        </div>
+         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+             <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full overflow-hidden animate-fade-in-up">
+                 <div className="bg-slate-50 px-6 py-4 border-b flex justify-between items-center">
+                     <div>
+                         <h3 className="font-bold text-lg text-slate-800">Huéspedes Reserva #{reservaHuespedes.id}</h3>
+                         <p className="text-xs text-slate-500">Titular: {reservaHuespedes.user?.name}</p>
+                     </div>
+                     <button onClick={() => setReservaHuespedes(null)} className="text-slate-400 hover:text-slate-600 font-bold text-xl">✕</button>
+                 </div>
+                 
+                 <div className="p-0">
+                     {reservaHuespedes.huespedes && reservaHuespedes.huespedes.length > 0 ? (
+                         <div className="overflow-x-auto">
+                             <table className="w-full text-sm text-left">
+                                 <thead className="bg-slate-100 text-slate-600 font-semibold border-b border-slate-200">
+                                     <tr>
+                                         <th className="px-6 py-3">Nombre Completo</th>
+                                         <th className="px-6 py-3">RUT / Pasaporte</th>
+                                         <th className="px-6 py-3">Teléfono</th>
+                                     </tr>
+                                 </thead>
+                                 <tbody className="divide-y divide-slate-100">
+                                     {reservaHuespedes.huespedes.map((h, i) => (
+                                         <tr key={h.id || i} className="hover:bg-slate-50">
+                                             <td className="px-6 py-3 font-medium text-slate-800">
+                                                 {h.nombre || h.nombre_completo || <span className="text-red-400 italic">No registrado</span>}
+                                             </td>
+                                             <td className="px-6 py-3 text-slate-600">
+                                                 {h.rut || h.documento || '-'}
+                                             </td>
+                                             <td className="px-6 py-3 text-slate-600">
+                                                 {h.telefono || '-'}
+                                             </td>
+                                         </tr>
+                                     ))}
+                                 </tbody>
+                             </table>
+                         </div>
+                     ) : (
+                         <div className="p-10 text-center flex flex-col items-center">
+                             <div className="text-4xl mb-3">👥</div>
+                             <p className="text-slate-500 font-medium">Lista de pasajeros vacía.</p>
+                             <p className="text-xs text-slate-400 mt-1">El cliente aún no ha registrado a sus acompañantes.</p>
+                         </div>
+                     )}
+                 </div>
+                 
+                 <div className="bg-slate-50 px-6 py-4 border-t text-right">
+                     <button onClick={() => setReservaHuespedes(null)} className="bg-slate-800 text-white px-6 py-2 rounded-lg text-sm hover:bg-slate-900 font-medium transition">
+                         Cerrar
+                     </button>
+                 </div>
+             </div>
+         </div>
       )}
     </div>
   );
 }
+
+
+
+

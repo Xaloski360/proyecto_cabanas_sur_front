@@ -7,7 +7,6 @@ const emptyGuest = {
   nombre: "",
   rut: "",
   telefono: "",
-  // email fuera: el huésped no tiene correo propio
 };
 
 export default function GuestManager({ reserva, onUpdate }) {
@@ -17,22 +16,18 @@ export default function GuestManager({ reserva, onUpdate }) {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
-  const [error, setError] = useState("");
   const [nuevo, setNuevo] = useState(emptyGuest);
 
-  // -----------------------------
-  // Cargar huéspedes de la reserva
-  // -----------------------------
+  // Cargar huéspedes
   async function loadHuespedes() {
     if (!reservaId) return;
     setLoading(true);
-    setError("");
     try {
       const data = await fetchHuespedesReserva(reservaId);
       setHuespedes(Array.isArray(data) ? data : []);
     } catch (e) {
       console.error(e);
-      setError(e.message || "No se pudieron cargar los huéspedes.");
+      toast.error("Error al cargar huéspedes.");
     } finally {
       setLoading(false);
     }
@@ -43,160 +38,111 @@ export default function GuestManager({ reserva, onUpdate }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reservaId]);
 
-  // -----------------------------
-  // Manejo de formulario
-  // -----------------------------
+  // Manejo de Inputs
   function handleChange(e) {
     const { name, value } = e.target;
-    setNuevo((prev) => ({
-      ...prev,
-      [name]: value,
-    }));
+    setNuevo((prev) => ({ ...prev, [name]: value }));
   }
 
+  // Agregar Huésped
   async function handleAdd(e) {
     e.preventDefault();
     if (saving || !reservaId) return;
 
-    if (!nuevo.nombre.trim()) {
-      toast.error("El nombre del huésped es obligatorio.");
-      return;
-    }
+    if (!nuevo.nombre.trim()) return toast.error("El nombre es obligatorio.");
 
-    // Capacidad física de la cabaña (regla dura)
+    // Validaciones de capacidad
     const maxCabana = reserva?.cabana?.capacidad ?? null;
-
-    // Cantidad de personas declarada al reservar (regla blanda)
     const cantidadDeclarada = reserva?.cantidad_personas ?? null;
-
     const cantidadActual = huespedes.length;
 
-    // -----------------------------
-    // REGLA DURA: capacidad cabana
-    // -----------------------------
     if (maxCabana && cantidadActual >= maxCabana) {
-      toast.error(
-        `La cabaña permite un máximo de ${maxCabana} huésped(es). Si necesitas más, contacta a la administración.`
-      );
+      toast.error(`Máximo de ${maxCabana} huéspedes permitido.`);
       return;
     }
 
-    // -----------------------------
-    // REGLA BLANDA: personas declaradas
-    // -----------------------------
     if (
       cantidadDeclarada &&
-      cantidadActual >= cantidadDeclarada && // ya estoy en el límite declarado
-      (!maxCabana || cantidadActual < maxCabana) // pero aún no llego a la capacidad física
+      cantidadActual >= cantidadDeclarada &&
+      (!maxCabana || cantidadActual < maxCabana)
     ) {
-      const confirmar = window.confirm(
-        `Declaraste ${cantidadDeclarada} huésped(es) al reservar, ` +
-          `pero estás agregando más.\n\n` +
-          `El valor final puede ajustarse según políticas de la cabaña ` +
-          `(persona extra, temporada, etc.). ¿Deseas continuar?`
-      );
-
-      if (!confirmar) return;
+      if (!window.confirm(`Declaraste ${cantidadDeclarada} personas. ¿Agregar extra?`)) return;
     }
 
     try {
       setSaving(true);
-
-      const payload = {
+      await addHuesped(reservaId, {
         nombre: nuevo.nombre.trim(),
         rut: nuevo.rut.trim() || null,
         telefono: nuevo.telefono.trim() || null,
-      };
-
-      await addHuesped(reservaId, payload);
-
-      toast.success("Huésped agregado.");
+      });
+      toast.success("Huésped agregado");
       setNuevo(emptyGuest);
       await loadHuespedes();
       if (onUpdate) onUpdate();
     } catch (e) {
       console.error(e);
-
-      // Si el backend devolvió 422 con mensaje de capacidad
-      const msg =
-        e?.response?.data?.message || e.message || "No se pudo agregar al huésped.";
-      toast.error(msg);
+      toast.error(e.response?.data?.message || "Error al agregar huésped");
     } finally {
       setSaving(false);
     }
   }
 
+  // Eliminar Huésped
   async function handleDelete(huespedId) {
     if (!window.confirm("¿Eliminar este huésped?")) return;
-
     try {
       setDeletingId(huespedId);
       await deleteHuesped(huespedId);
-      toast.success("Huésped eliminado.");
+      toast.success("Eliminado");
       await loadHuespedes();
       if (onUpdate) onUpdate();
     } catch (e) {
-      console.error(e);
-      toast.error(e.message || "No se pudo eliminar al huésped.");
+      toast.error("Error al eliminar");
     } finally {
       setDeletingId(null);
     }
   }
 
-  // -----------------------------
-  // Render
-  // -----------------------------
   return (
-    <div className="mt-3 border rounded-xl bg-slate-50 px-3 py-3">
-      <div className="flex items-center justify-between mb-2">
-        <h3 className="text-sm font-semibold text-slate-800">
-          Huéspedes de la reserva
-        </h3>
-        {loading && (
-          <span className="text-[11px] text-slate-500">Cargando…</span>
-        )}
+    <div className="space-y-4">
+      {/* Título y Loader */}
+      <div className="flex items-center justify-between">
+        <h4 className="text-sm font-bold text-slate-700">Lista de Pasajeros</h4>
+        {loading && <span className="text-xs text-slate-400 animate-pulse">Actualizando...</span>}
       </div>
 
-      {error && (
-        <p className="text-xs text-red-600 mb-2 bg-red-50 border border-red-100 rounded px-2 py-1">
-          {error}
-        </p>
-      )}
-
-      {/* Tabla de huéspedes */}
+      {/* Lista de Huéspedes */}
       {huespedes.length === 0 ? (
-        <p className="text-xs text-slate-500 mb-2">
-          Aún no has registrado huéspedes para esta reserva.
-        </p>
+        <div className="text-center py-4 bg-white border border-dashed border-slate-200 rounded-lg">
+          <p className="text-xs text-slate-400">No hay huéspedes registrados.</p>
+        </div>
       ) : (
-        <div className="overflow-x-auto mb-3">
-          <table className="min-w-full text-xs border">
-            <thead className="bg-slate-100">
+        <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+          <table className="w-full text-sm text-left">
+            <thead className="bg-slate-50 text-slate-500 font-medium border-b border-slate-100">
               <tr>
-                <th className="px-2 py-1 text-left border-b">Nombre</th>
-                <th className="px-2 py-1 text-left border-b">RUT/Doc.</th>
-                <th className="px-2 py-1 text-left border-b">Teléfono</th>
-                <th className="px-2 py-1 text-left border-b w-16"></th>
+                <th className="px-3 py-2 font-normal text-xs uppercase">Nombre</th>
+                <th className="px-3 py-2 font-normal text-xs uppercase">RUT / Doc</th>
+                <th className="px-3 py-2 font-normal text-xs uppercase text-right">Acción</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody className="divide-y divide-slate-100">
               {huespedes.map((h) => (
-                <tr key={h.id}>
-                  <td className="px-2 py-1 border-b">{h.nombre}</td>
-                  <td className="px-2 py-1 border-b">
-                    {h.rut || <span className="text-slate-400">—</span>}
+                <tr key={h.id} className="hover:bg-slate-50 transition-colors">
+                  <td className="px-3 py-2 text-slate-700 font-medium">
+                    {h.nombre}
+                    {h.telefono && <div className="text-xs text-slate-400 font-normal">{h.telefono}</div>}
                   </td>
-                  <td className="px-2 py-1 border-b">
-                    {h.telefono || <span className="text-slate-400">—</span>}
-                  </td>
-                  <td className="px-2 py-1 border-b text-right">
+                  <td className="px-3 py-2 text-slate-600">{h.rut || "—"}</td>
+                  <td className="px-3 py-2 text-right">
                     <button
-                      type="button"
                       onClick={() => handleDelete(h.id)}
                       disabled={deletingId === h.id}
-                      className="text-[11px] text-red-600 hover:underline disabled:opacity-60"
+                      className="text-red-400 hover:text-red-600 p-1 rounded hover:bg-red-50 transition"
+                      title="Eliminar huésped"
                     >
-                      {deletingId === h.id ? "Eliminando…" : "Eliminar"}
+                      {deletingId === h.id ? "..." : "🗑️"}
                     </button>
                   </td>
                 </tr>
@@ -206,55 +152,33 @@ export default function GuestManager({ reserva, onUpdate }) {
         </div>
       )}
 
-      {/* Form para agregar huésped */}
-      <form
-        onSubmit={handleAdd}
-        className="grid gap-2 sm:grid-cols-3 items-end"
-      >
-        <div className="flex flex-col gap-1">
-          <label className="text-[11px] text-slate-600">Nombre*</label>
+      {/* Formulario de Agregar (Compacto) */}
+      <form onSubmit={handleAdd} className="bg-slate-50 p-3 rounded-lg border border-slate-200 flex flex-col gap-3">
+        <p className="text-xs font-bold text-slate-500 uppercase">Agregar nuevo pasajero</p>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
           <input
             type="text"
             name="nombre"
             value={nuevo.nombre}
             onChange={handleChange}
-            className="border rounded-md px-2 py-1 text-xs"
-            placeholder="Nombre completo"
+            placeholder="Nombre Completo *"
+            className="border border-slate-300 rounded px-2 py-1.5 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
             required
           />
-        </div>
-
-        <div className="flex flex-col gap-1">
-          <label className="text-[11px] text-slate-600">RUT/Doc.</label>
           <input
             type="text"
             name="rut"
             value={nuevo.rut}
             onChange={handleChange}
-            className="border rounded-md px-2 py-1 text-xs"
-            placeholder="Opcional"
+            placeholder="RUT / Pasaporte"
+            className="border border-slate-300 rounded px-2 py-1.5 text-sm focus:border-emerald-500 outline-none"
           />
-        </div>
-
-        <div className="flex flex-col gap-1">
-          <label className="text-[11px] text-slate-600">Teléfono</label>
-          <input
-            type="text"
-            name="telefono"
-            value={nuevo.telefono}
-            onChange={handleChange}
-            className="border rounded-md px-2 py-1 text-xs"
-            placeholder="Opcional"
-          />
-        </div>
-
-        <div className="sm:col-span-3 flex justify-end mt-1">
           <button
             type="submit"
             disabled={saving}
-            className="px-3 py-1.5 text-xs rounded-md bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60"
+            className="bg-slate-800 text-white text-sm font-medium py-1.5 px-3 rounded hover:bg-slate-900 transition disabled:opacity-50"
           >
-            {saving ? "Guardando…" : "Agregar huésped"}
+            {saving ? "Guardando..." : "Agregar +"}
           </button>
         </div>
       </form>

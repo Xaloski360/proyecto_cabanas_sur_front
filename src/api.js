@@ -16,7 +16,6 @@ export function getToken() {
 }
 
 export function setToken(token) {
-  // usamos "auth_token" como estándar nuevo, pero dejamos "token" vivo si lo ocupas en otros lados
   localStorage.setItem("auth_token", token);
   localStorage.setItem("token", token);
 }
@@ -28,6 +27,7 @@ export function clearToken() {
 
 // ----------------------
 // Helper base: api()
+// Para llamadas JSON estándar
 // ----------------------
 export async function api(path, options = {}) {
   const method = options.method || "GET";
@@ -92,11 +92,14 @@ export function registerUser(payload) {
 export function fetchMe() {
   return api("/api/me", { method: "GET" });
 }
-
+export function updateProfile(payload) {
+  return api("/api/me", {
+    method: "PUT",
+    body: payload,
+  });
+}
 export function logoutUser() {
-  // si en tu api.php no la tienes, este fetch fallará pero igual
-  // hacemos clearToken en finally
-  return api("/logout", { method: "POST" }).finally(() => {
+  return api("/api/logout", { method: "POST" }).finally(() => {
     clearToken();
   });
 }
@@ -112,8 +115,10 @@ export function fetchCabana(id) {
   return api(`/api/cabanas/${id}`);
 }
 
-export function fetchDisponibilidad(desde, hasta) {
-  return api(`/api/disponibilidad?desde=${desde}&hasta=${hasta}`);
+
+export function fetchDisponibilidad(desde, hasta, huespedes) {
+  // Agregamos &huespedes=${huespedes} a la URL
+  return api(`/api/disponibilidad?desde=${desde}&hasta=${hasta}&huespedes=${huespedes}`);
 }
 
 // Helpers ADMIN para CRUD de cabañas
@@ -137,7 +142,7 @@ export function deleteCabana(id) {
   });
 }
 
-// Alias viejo para compatibilidad con Pruebas.jsx
+// Alias viejo para compatibilidad
 export function listarCabanas() {
   return fetchCabanas();
 }
@@ -162,7 +167,6 @@ export function createReserva(payload) {
   });
 }
 
-// Alias legado (usado en Pruebas.jsx)
 export function crearReserva(payload) {
   return createReserva(payload);
 }
@@ -172,20 +176,18 @@ export function fetchMisReservas() {
   return api("/api/mis-reservas", { method: "GET" });
 }
 
-// 🔹 Listado general (admin/recepción) con filtros opcionales
+// Listado general (admin/recepción) con filtros opcionales
 export function fetchReservasAdmin(params = {}) {
   const qs = new URLSearchParams(params).toString();
   const url = qs ? `/api/reservas?${qs}` : "/api/reservas";
-
   return api(url, { method: "GET" });
 }
 
-// Alias antiguo: lo mantenemos para no romper nada
 export function fetchReservasUser() {
   return fetchReservasAdmin();
 }
 
-// Cambiar estado a cancelada (dashboard usuario)
+// Cambiar estado a cancelada
 export function cancelarReserva(id) {
   return api(`/api/reservas/${id}`, {
     method: "PUT",
@@ -193,7 +195,7 @@ export function cancelarReserva(id) {
   });
 }
 
-// Actualizar reserva (cambiar fechas, estado, etc.)
+// Actualizar reserva
 export function updateReserva(id, payload) {
   return api(`/api/reservas/${id}`, {
     method: "PUT",
@@ -201,14 +203,12 @@ export function updateReserva(id, payload) {
   });
 }
 
-// Check-in (panel admin/recepción)
+// Check-in
 export function checkInReserva(reservaId) {
   return api(`/api/reservas/${reservaId}/checkin`, {
     method: "POST",
   });
 }
-
-
 
 // ======================================================
 // REPORTES
@@ -217,7 +217,6 @@ export function fetchReporteOcupacion() {
   return api("/api/reportes/ocupacion", { method: "GET" });
 }
 
-// Alias para compatibilidad
 export function reporteOcupacion() {
   return fetchReporteOcupacion();
 }
@@ -226,31 +225,27 @@ export function reporteOcupacion() {
 // PAGOS (JSON)
 // ======================================================
 export function registrarPago(payload) {
-  // payload esperado: { reserva_id, monto, metodo, referencia }
   return api("/api/pagos", {
     method: "POST",
     body: payload,
   });
 }
 
-// Validar pago (ADMIN)
 export function validarPago(pagoId) {
-  // Back: POST /api/pagos/{pago}/validar
   return api(`/api/pagos/${pagoId}/validar`, {
     method: "POST",
   });
 }
 
 // ======================================================
-// SUBIR COMPROBANTE DE PAGO (archivo multipart/form-data)
+// SUBIR COMPROBANTE DE PAGO (Multipart)
 // ======================================================
 export async function subirComprobantePago(formData) {
   const token = getToken();
-
   const headers = {};
   if (token) headers["Authorization"] = `Bearer ${token}`;
-  // NO pongas "Content-Type": "application/json" aquí, fetch lo calcula solo.
-
+  
+  // Fetch directo para que el navegador maneje el Boundary del FormData
   const res = await fetch(`${API_URL}/api/pagos`, {
     method: "POST",
     headers,
@@ -260,14 +255,9 @@ export async function subirComprobantePago(formData) {
   const data = await res.json().catch(() => ({}));
 
   if (!res.ok) {
-    const msg =
-      data.message ||
-      (data.errors
-        ? Object.values(data.errors).flat().join(" ")
-        : "Error al subir comprobante");
+    const msg = data.message || "Error al subir comprobante";
     throw new Error(msg);
   }
-
   return data;
 }
 
@@ -287,9 +277,93 @@ export function deleteHuesped(huespedId) {
   });
 }
 
-// 👇 FALTA ESTA: la que está pidiendo GuestManager.jsx
 export function fetchHuespedesReserva(reservaId) {
   return api(`/api/reservas/${reservaId}/huespedes`, {
     method: "GET",
   });
+}
+
+export function fetchServicios() {
+  return api("/api/servicios");
+}
+
+// ======================================================
+// IMÁGENES DE CABAÑA (NUEVO y CORREGIDO)
+// ======================================================
+
+// Subir imagen (Usa fetch directo para soportar archivos)
+export async function uploadCabanaImagen(cabanaId, file, titulo = "") {
+  const token = getToken();
+  
+  const form = new FormData();
+  form.append("imagen", file);
+  if (titulo) form.append("titulo", titulo);
+
+  const headers = {};
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  // Usamos fetch directo, igual que en subirComprobantePago
+  // para evitar que el helper 'api()' fuerce JSON.stringify
+  const res = await fetch(`${API_URL}/api/cabanas/${cabanaId}/imagenes`, {
+    method: "POST",
+    headers,
+    body: form,
+  });
+
+  const data = await res.json().catch(() => ({}));
+
+  if (!res.ok) {
+    throw new Error(data.message || "Error al subir imagen");
+  }
+  return data;
+}
+
+// Obtener imágenes (Usa api helper estándar)
+export async function fetchCabanaImagenes(cabanaId) {
+  // Asegúrate de usar /api/ al principio si tu ruta es api.php
+  return api(`/api/cabanas/${cabanaId}/imagenes`, {
+    method: "GET"
+  });
+}
+
+// Eliminar imagen (Usa api helper estándar)
+export async function deleteCabanaImagen(imagenId) {
+    // La ruta debe coincidir con routes/api.php
+    // Si en Laravel es Route::delete('/cabana-imagenes/{imagen}'...)
+    return api(`/api/cabana-imagenes/${imagenId}`, {
+       method: "DELETE"
+   });
+}
+// src/api.js
+
+export function fetchServiciosAdmin() {
+  return api("/api/admin/servicios");
+}
+
+export async function createServicio(formData) {
+  const token = getToken();
+  const res = await fetch(`${API_URL}/api/admin/servicios`, {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${token}` }, // No content-type (FormData)
+    body: formData,
+  });
+  if (!res.ok) throw new Error("Error creando servicio");
+  return res.json();
+}
+
+export async function updateServicio(id, formData) {
+  const token = getToken();
+  // Truco: Laravel a veces no lee archivos en PUT directos. Usamos POST con _method
+  formData.append("_method", "PUT"); 
+  const res = await fetch(`${API_URL}/api/admin/servicios/${id}`, {
+    method: "POST", 
+    headers: { "Authorization": `Bearer ${token}` },
+    body: formData,
+  });
+  if (!res.ok) throw new Error("Error actualizando servicio");
+  return res.json();
+}
+
+export function deleteServicio(id) {
+  return api(`/api/admin/servicios/${id}`, { method: "DELETE" });
 }
